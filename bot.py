@@ -1,3 +1,4 @@
+```python
 import asyncio
 import os
 import random
@@ -14,13 +15,14 @@ from telegram.ext import (
 )
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 TOKEN = os.getenv("8675798865:AAG2JDi5_zdEeceZobsGIHy9BC4iKw25YqQ")
 
 DB_FILE = "domains.db"
-COOLDOWN = 5
+MAX_ENERGY = 100
+ATTACK_COOLDOWN = 5
 
 # ============================================================
 # DOMAINES
@@ -31,43 +33,41 @@ DOMAINS = [
         "name": "Sanctuaire Démoniaque",
         "character": "Sukuna",
         "emoji": "🔥",
-        "power": 22,
-        "energy": 20,
+        "power": (15, 27),
+        "cost": (8, 16),
         "speech": (
-            "Audite vocem meam, o caeli et terra. "
-            "Termini mundi nunc franguntur. "
-            "Nulla lex, nulla fuga, nulla spes remanet. "
-            "Imperium meum super omnia surgit. "
-            "Aperiantur portae territorii, "
-            "et silentium cadat super eos qui resistunt."
+            "Audi me, caeli et terra. "
+            "Fines mundi nunc frangantur. "
+            "Nulla via effugiendi maneat. "
+            "Imperium meum supra omnes terminos surgat. "
+            "Silentium cadat, et territorium meum aperiatur."
         ),
     },
     {
         "name": "Sphère de l'Infini",
         "character": "Gojo",
         "emoji": "♾️",
-        "power": 24,
-        "energy": 24,
+        "power": (17, 29),
+        "cost": (10, 18),
         "speech": (
-            "Inter finitum et infinitum, "
-            "spatium sine fine nascitur. "
-            "Quod appropinquat, lente subsistit. "
-            "Quod fugit, semper manet. "
-            "Mens hominis ante infinitatem tremit. "
-            "Nunc territorium meum aperitur."
+            "Inter finitum et infinitum spatium aperitur. "
+            "Omnis motus lente subsistit. "
+            "Quod appropinquat, terminum suum amittit. "
+            "Quod fugit, ad infinitum redit. "
+            "Nunc territorium infinitum aperiatur."
         ),
     },
     {
         "name": "Perfection de Soi",
         "character": "Mahito",
         "emoji": "👁️",
-        "power": 19,
-        "energy": 18,
+        "power": (14, 25),
+        "cost": (8, 15),
         "speech": (
-            "Forma mutatur, anima movetur, "
-            "et corpus veritatem suam revelat. "
-            "Nihil stabile est sub hoc caelo. "
-            "Omnis forma potest frangi et renasci. "
+            "Forma mutatur et anima movetur. "
+            "Nihil sub sole perpetuum est. "
+            "Corpus suam veritatem ostendat. "
+            "Forma antiqua cadat, nova forma surgat. "
             "Territorium meum nunc aperiatur."
         ),
     },
@@ -75,53 +75,55 @@ DOMAINS = [
         "name": "Cercueil de la Montagne de Fer",
         "character": "Jogo",
         "emoji": "🌋",
-        "power": 21,
-        "energy": 21,
+        "power": (15, 26),
+        "cost": (9, 17),
         "speech": (
-            "Ignis antiquus e profundo terrae surgat. "
+            "Ignis ex profundo terrae surgat. "
             "Montes ardeant et caelum rubescat. "
-            "Calor meus omnia claustra superet. "
-            "Sub potestate ignis, "
-            "nullum refugium permaneat."
+            "Calor meus omnes limites superet. "
+            "Sub potestate ignis, terra contremiscat. "
+            "Territorium flammarum aperiatur."
         ),
     },
     {
         "name": "Horizon du Captif",
         "character": "Dagon",
         "emoji": "🌊",
-        "power": 20,
-        "energy": 20,
+        "power": (14, 25),
+        "cost": (8, 16),
         "speech": (
-            "Oceanus infinitus vocat. "
-            "Undae surgant ultra caelum. "
-            "Profundum aperitur, "
-            "et terra hominum evanescit. "
-            "In hoc regno maris, "
-            "ego dominor."
+            "Oceanus antiquus me vocat. "
+            "Undae surgant et caelum tegant. "
+            "Profundum sine fine aperiatur. "
+            "Terra humana sub undis taceat. "
+            "Regnum maris nunc nascatur."
         ),
     },
 ]
 
 # ============================================================
-# BASE DE DONNÉES
+# DATABASE
 # ============================================================
 
-def db():
+def connect_db():
     return sqlite3.connect(DB_FILE)
 
 
 def init_db():
-    con = db()
+    con = connect_db()
     cur = con.cursor()
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS players (
-            chat_id INTEGER,
-            user_id INTEGER,
-            name TEXT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
             energy INTEGER DEFAULT 100,
             wins INTEGER DEFAULT 0,
             losses INTEGER DEFAULT 0,
+            likes INTEGER DEFAULT 0,
+            xp INTEGER DEFAULT 0,
+            last_attack REAL DEFAULT 0,
             PRIMARY KEY(chat_id, user_id)
         )
     """)
@@ -129,12 +131,12 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS battles (
             chat_id INTEGER PRIMARY KEY,
-            player1 INTEGER,
-            player2 INTEGER,
+            player1 INTEGER NOT NULL,
+            player2 INTEGER NOT NULL DEFAULT 0,
             hp1 INTEGER DEFAULT 100,
             hp2 INTEGER DEFAULT 100,
-            active INTEGER DEFAULT 1,
-            turn INTEGER DEFAULT 1
+            turn_user INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1
         )
     """)
 
@@ -143,29 +145,27 @@ def init_db():
 
 
 def register_player(chat_id, user):
-    con = db()
+    con = connect_db()
     cur = con.cursor()
 
     cur.execute("""
-        INSERT OR IGNORE INTO players
-        (chat_id, user_id, name, energy)
-        VALUES (?, ?, ?, 100)
-    """, (
-        chat_id,
-        user.id,
-        user.full_name,
-    ))
+        INSERT INTO players
+        (chat_id, user_id, name)
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id, user_id)
+        DO UPDATE SET name=excluded.name
+    """, (chat_id, user.id, user.full_name))
 
     con.commit()
     con.close()
 
 
 def get_player(chat_id, user_id):
-    con = db()
+    con = connect_db()
     cur = con.cursor()
 
     cur.execute("""
-        SELECT energy, wins, losses
+        SELECT energy, wins, losses, likes, xp, last_attack, name
         FROM players
         WHERE chat_id=? AND user_id=?
     """, (chat_id, user_id))
@@ -177,12 +177,12 @@ def get_player(chat_id, user_id):
 
 
 def change_energy(chat_id, user_id, amount):
-    con = db()
+    con = connect_db()
     cur = con.cursor()
 
     cur.execute("""
         UPDATE players
-        SET energy = MAX(0, MIN(100, energy + ?))
+        SET energy=MAX(0, MIN(100, energy + ?))
         WHERE chat_id=? AND user_id=?
     """, (amount, chat_id, user_id))
 
@@ -190,14 +190,160 @@ def change_energy(chat_id, user_id, amount):
     con.close()
 
 
+def add_result(chat_id, user_id, win=False, like=False, xp=0):
+    con = connect_db()
+    cur = con.cursor()
+
+    if win:
+        cur.execute("""
+            UPDATE players
+            SET wins=wins+1, xp=xp+?
+            WHERE chat_id=? AND user_id=?
+        """, (xp, chat_id, user_id))
+    else:
+        cur.execute("""
+            UPDATE players
+            SET losses=losses+1, xp=xp+?
+            WHERE chat_id=? AND user_id=?
+        """, (xp, chat_id, user_id))
+
+    if like:
+        cur.execute("""
+            UPDATE players
+            SET likes=likes+1
+            WHERE chat_id=? AND user_id=?
+        """, (chat_id, user_id))
+
+    con.commit()
+    con.close()
+
+
+def set_last_attack(chat_id, user_id):
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE players
+        SET last_attack=?
+        WHERE chat_id=? AND user_id=?
+    """, (time.time(), chat_id, user_id))
+
+    con.commit()
+    con.close()
+
+
+def cooldown_remaining(chat_id, user_id):
+    data = get_player(chat_id, user_id)
+
+    if not data:
+        return 0
+
+    remaining = ATTACK_COOLDOWN - (time.time() - data[5])
+
+    return max(0, remaining)
+
+
+def get_battle(chat_id):
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT player1, player2, hp1, hp2, turn_user, active
+        FROM battles
+        WHERE chat_id=?
+    """, (chat_id,))
+
+    result = cur.fetchone()
+    con.close()
+
+    return result
+
+
+def create_battle(chat_id, player1):
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        INSERT OR REPLACE INTO battles
+        (chat_id, player1, player2, hp1, hp2, turn_user, active)
+        VALUES (?, ?, 0, 100, 100, 0, 1)
+    """, (chat_id, player1))
+
+    con.commit()
+    con.close()
+
+
+def join_battle(chat_id, player2):
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE battles
+        SET player2=?, turn_user=player1
+        WHERE chat_id=? AND active=1
+    """, (player2, chat_id))
+
+    con.commit()
+    con.close()
+
+
+def update_battle(chat_id, hp1, hp2, turn_user):
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE battles
+        SET hp1=?, hp2=?, turn_user=?
+        WHERE chat_id=?
+    """, (hp1, hp2, turn_user, chat_id))
+
+    con.commit()
+    con.close()
+
+
+def end_battle(chat_id):
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE battles
+        SET active=0
+        WHERE chat_id=?
+    """, (chat_id,))
+
+    con.commit()
+    con.close()
+
+
 # ============================================================
-# PHOTO DE PROFIL
+# OUTILS
 # ============================================================
+
+def health_bar(value):
+    value = max(0, min(100, value))
+
+    full = value // 10
+    empty = 10 - full
+
+    return "█" * full + "░" * empty
+
+
+def energy_bar(value):
+    value = max(0, min(100, value))
+
+    full = value // 10
+    empty = 10 - full
+
+    return "⚡" * full + "▫️" * empty
+
+
+def random_domain():
+    return random.choice(DOMAINS)
+
 
 async def get_profile_photo(bot, user_id):
     """
-    Essaie de récupérer la photo de profil Telegram du joueur.
-    Retourne le fichier Telegram ou None.
+    Récupère la photo de profil accessible au bot.
     """
 
     try:
@@ -211,155 +357,127 @@ async def get_profile_photo(bot, user_id):
 
         photo = photos.photos[0][-1]
 
-        file = await bot.get_file(photo.file_id)
+        telegram_file = await bot.get_file(
+            photo.file_id
+        )
 
-        path = f"profile_{user_id}.jpg"
+        path = Path(
+            f"profile_{user_id}.jpg"
+        )
 
-        await file.download_to_drive(path)
+        await telegram_file.download_to_drive(
+            custom_path=path
+        )
 
         return path
 
-    except Exception as e:
-        print("Erreur photo profil:", e)
+    except Exception as error:
+        print("Photo non disponible:", error)
         return None
 
 
-# ============================================================
-# OUTILS
-# ============================================================
+async def send_player_card(
+    update,
+    context,
+    user,
+    text
+):
+    """
+    Envoie le message avec la photo du joueur.
+    """
 
-def bar(value):
-    value = max(0, min(100, value))
+    photo = await get_profile_photo(
+        context.bot,
+        user.id
+    )
 
-    full = value // 10
-    empty = 10 - full
+    try:
 
-    return "█" * full + "░" * empty
+        if photo and photo.exists():
 
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=InputFile(str(photo)),
+                caption=text
+            )
 
-def random_domain():
-    return random.choice(DOMAINS)
+            try:
+                photo.unlink()
+            except Exception:
+                pass
 
+        else:
 
-def get_battle(chat_id):
-    con = db()
-    cur = con.cursor()
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=text
+            )
 
-    cur.execute("""
-        SELECT player1, player2, hp1, hp2, active, turn
-        FROM battles
-        WHERE chat_id=?
-    """, (chat_id,))
+    except Exception as error:
 
-    result = cur.fetchone()
-    con.close()
+        print("Erreur envoi:", error)
 
-    return result
-
-
-def create_battle(chat_id, p1, p2):
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-        INSERT OR REPLACE INTO battles
-        (chat_id, player1, player2, hp1, hp2, active, turn)
-        VALUES (?, ?, ?, 100, 100, 1, 1)
-    """, (chat_id, p1, p2))
-
-    con.commit()
-    con.close()
-
-
-def update_battle(chat_id, hp1, hp2, turn):
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE battles
-        SET hp1=?, hp2=?, turn=?
-        WHERE chat_id=?
-    """, (hp1, hp2, turn, chat_id))
-
-    con.commit()
-    con.close()
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text
+        )
 
 
-def finish_battle(chat_id):
-    con = db()
-    cur = con.cursor()
+async def animate_message(
+    message,
+    lines,
+    delay=0.8
+):
+    """
+    Animation du même message.
+    """
 
-    cur.execute("""
-        UPDATE battles
-        SET active=0
-        WHERE chat_id=?
-    """, (chat_id,))
+    for text in lines:
 
-    con.commit()
-    con.close()
+        try:
+            await message.edit_text(text)
+        except Exception:
+            return
 
-
-def add_win(chat_id, user_id):
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE players
-        SET wins=wins+1
-        WHERE chat_id=? AND user_id=?
-    """, (chat_id, user_id))
-
-    con.commit()
-    con.close()
-
-
-def add_loss(chat_id, user_id):
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-        UPDATE players
-        SET losses=losses+1
-        WHERE chat_id=? AND user_id=?
-    """, (chat_id, user_id))
-
-    con.commit()
-    con.close()
+        await asyncio.sleep(delay)
 
 
 # ============================================================
-# COMMANDE /START
+# START
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "⚔️ BATTLE OF DOMAINS ⚔️\n\n"
-        "Bienvenue dans le système de confrontation.\n\n"
+        "Je suis l'arbitre du territoire.\n\n"
         "Commandes :\n"
-        "/extension_du_territoire — lancer un domaine\n"
-        "/contre_extension — répondre à un domaine\n"
-        "/attaque — attaquer\n"
-        "/energie — voir son énergie\n"
-        "/stats — voir ses statistiques\n"
-        "/abandonner — quitter le combat\n\n"
-        "⚡ Énergie maximale : 100"
+        "🔥 /extension_du_territoire\n"
+        "⚡ /contre_extension\n"
+        "💥 /attaque\n"
+        "🔋 /energie\n"
+        "📊 /stats\n"
+        "🏆 /classement\n"
+        "🏳️ /abandonner\n\n"
+        "Chaque joueur commence avec 100 énergie."
     )
 
 
 # ============================================================
-# EXTENSION DU TERRITOIRE
+# EXTENSION
 # ============================================================
 
 async def extension(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    message = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        await message.reply_text(
-            "⚠️ Les territoires ne peuvent être ouverts que dans un groupe."
+    if chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP
+    ):
+        await update.message.reply_text(
+            "⚠️ Cette commande doit être utilisée dans un groupe."
         )
         return
 
@@ -367,163 +485,133 @@ async def extension(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     battle = get_battle(chat.id)
 
-    if battle and battle[4] == 1:
-        await message.reply_text(
-            "⚔️ Un territoire est déjà actif !\n"
-            "Utilise /contre_extension pour répondre."
-        )
-        return
+    if battle and battle[5] == 1:
 
-    domain = random_domain()
-
-    # On crée un combat avec un adversaire temporaire.
-    # Le premier joueur devient le challenger.
-    create_battle(
-        chat.id,
-        user.id,
-        0
-    )
-
-    # Photo du joueur
-    photo = await get_profile_photo(
-        context.bot,
-        user.id
-    )
-
-    text = (
-        "⚠️ UNE PRÉSENCE ÉTRANGE SE MANIFESTE...\n\n"
-        f"👤 {user.full_name}\n\n"
-        f"{domain['emoji']} {domain['character']}\n\n"
-        f"「領域展開」\n\n"
-        f"⚔️ {domain['name']}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "📜 INCANTATION\n\n"
-        f"{domain['speech']}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "⚡ TERRITOIRE OUVERT"
-    )
-
-    if photo:
-        sent = await context.bot.send_photo(
-            chat_id=chat.id,
-            photo=InputFile(photo),
-            caption=text
-        )
-
-        try:
-            os.remove(photo)
-        except:
-            pass
-
-    else:
-        sent = await context.bot.send_message(
-            chat_id=chat.id,
-            text=text
-        )
-
-    # On rappelle aux spectateurs de ne pas interférer.
-    await context.bot.send_message(
-        chat_id=chat.id,
-        text=(
-            "👥 SPECTATEURS\n\n"
-            "Le territoire est ouvert.\n"
-            "Seul un autre joueur peut répondre avec :\n\n"
+        await update.message.reply_text(
+            "⚔️ Un territoire est déjà ouvert !\n\n"
+            "Un autre joueur doit utiliser "
             "/contre_extension"
         )
-    )
-
-
-# ============================================================
-# CONTRE-EXTENSION
-# ============================================================
-
-async def contre_extension(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    message = update.effective_message
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
         return
 
-    register_player(chat.id, user)
-
-    battle = get_battle(chat.id)
-
-    if not battle or battle[4] != 1:
-        await message.reply_text(
-            "❌ Aucun territoire actif."
-        )
-        return
-
-    player1, player2, hp1, hp2, active, turn = battle
-
-    if player1 == user.id:
-        await message.reply_text(
-            "⚠️ Tu ne peux pas contre-attaquer ton propre territoire."
-        )
-        return
-
-    if player2 != 0:
-        await message.reply_text(
-            "⚔️ Un adversaire a déjà rejoint le combat."
-        )
-        return
-
-    # Adversaire accepté
     create_battle(
         chat.id,
-        player1,
         user.id
     )
 
     domain = random_domain()
 
-    photo = await get_profile_photo(
-        context.bot,
-        user.id
-    )
+    # Supprime la commande dans le groupe.
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
     text = (
-        "⚡ CONTRE-EXTENSION !\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚠️ UNE PRÉSENCE APPARAÎT\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👤 {user.full_name}\n\n"
         f"{domain['emoji']} {domain['character']}\n\n"
         "「領域展開」\n\n"
         f"⚔️ {domain['name']}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
         "📜 INCANTATION\n\n"
         f"{domain['speech']}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🔥 DEUX TERRITOIRES S'AFFRONTENT !"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔥 TERRITOIRE OUVERT\n\n"
+        "🔋 Énergie : 100/100\n"
+        "⚔️ Jauge : 100%\n\n"
+        "👥 Les autres membres sont spectateurs.\n"
+        "⚡ Un adversaire peut utiliser /contre_extension"
     )
 
-    if photo:
+    await send_player_card(
+        update,
+        context,
+        user,
+        text
+    )
 
-        await context.bot.send_photo(
-            chat_id=chat.id,
-            photo=InputFile(photo),
-            caption=text
+
+# ============================================================
+# CONTRE EXTENSION
+# ============================================================
+
+async def contre_extension(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP
+    ):
+        return
+
+    register_player(chat.id, user)
+
+    battle = get_battle(chat.id)
+
+    if not battle or battle[5] != 1:
+
+        await update.message.reply_text(
+            "❌ Aucun territoire ouvert."
         )
+        return
 
-        try:
-            os.remove(photo)
-        except:
-            pass
+    player1, player2, hp1, hp2, turn, active = battle
 
-    else:
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=text
+    if user.id == player1:
+
+        await update.message.reply_text(
+            "⚠️ Tu es déjà dans ce territoire."
         )
+        return
 
-    await context.bot.send_message(
-        chat_id=chat.id,
-        text=(
-            "⚔️ COMBAT COMMENCÉ !\n\n"
-            "Les deux combattants peuvent maintenant utiliser :\n"
-            "/attaque\n\n"
-            "👥 Les autres membres sont spectateurs."
+    if player2 != 0:
+
+        await update.message.reply_text(
+            "⚔️ Le territoire possède déjà un adversaire."
         )
+        return
+
+    join_battle(
+        chat.id,
+        user.id
+    )
+
+    domain = random_domain()
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    text = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ CONTRE-EXTENSION\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 {user.full_name}\n\n"
+        f"{domain['emoji']} {domain['character']}\n\n"
+        "「領域展開」\n\n"
+        f"⚔️ {domain['name']}\n\n"
+        "📜 INCANTATION\n\n"
+        f"{domain['speech']}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚔️ DEUX TERRITOIRES SE RENCONTRENT\n\n"
+        "🔴 Joueur 1 : 100%\n"
+        "🔵 Joueur 2 : 100%\n\n"
+        "🔥 Le premier tour commence."
+    )
+
+    await send_player_card(
+        update,
+        context,
+        user,
+        text
     )
 
 
@@ -531,82 +619,129 @@ async def contre_extension(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ATTAQUE
 # ============================================================
 
-async def attaque(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def attaque(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    message = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+    if chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP
+    ):
         return
 
     battle = get_battle(chat.id)
 
-    if not battle or battle[4] != 1:
-        await message.reply_text(
+    if not battle or battle[5] != 1:
+
+        await update.message.reply_text(
             "❌ Aucun combat actif."
         )
         return
 
-    p1, p2, hp1, hp2, active, turn = battle
+    p1, p2, hp1, hp2, turn, active = battle
 
-    if user.id not in [p1, p2]:
-        await message.reply_text(
+    if p2 == 0:
+
+        await update.message.reply_text(
+            "⏳ Attends qu'un adversaire rejoigne le territoire."
+        )
+        return
+
+    if user.id not in (p1, p2):
+
+        await update.message.reply_text(
             "👥 Tu es spectateur.\n"
             "Seuls les deux combattants peuvent attaquer."
         )
         return
 
-    # Alternance des tours
-    current_player = p1 if turn == 1 else p2
+    if user.id != turn:
 
-    if user.id != current_player:
-        await message.reply_text(
+        await update.message.reply_text(
             "⏳ Ce n'est pas ton tour."
         )
         return
 
-    player = get_player(chat.id, user.id)
+    remaining = cooldown_remaining(
+        chat.id,
+        user.id
+    )
 
-    if not player:
-        return
+    if remaining > 0:
 
-    energy = player[0]
-
-    if energy < 10:
-        await message.reply_text(
-            "🔋 Énergie insuffisante !\n\n"
-            f"Énergie : {energy}/100"
+        await update.message.reply_text(
+            f"⏳ Attends {remaining:.1f} seconde(s)."
         )
         return
 
-    domain = random_domain()
-
-    # puissance aléatoire
-    damage = random.randint(
-        max(8, domain["power"] - 7),
-        domain["power"] + 5
+    data = get_player(
+        chat.id,
+        user.id
     )
 
-    energy_cost = random.randint(8, 15)
+    energy = data[0]
+
+    if energy < 10:
+
+        await update.message.reply_text(
+            "🔋 Ton énergie est insuffisante !\n\n"
+            f"{energy_bar(energy)}\n"
+            f"{energy}/100"
+        )
+        return
+
+    set_last_attack(
+        chat.id,
+        user.id
+    )
+
+    domain = random_domain()
+
+    damage = random.randint(
+        domain["power"][0],
+        domain["power"][1]
+    )
+
+    cost = random.randint(
+        domain["cost"][0],
+        domain["cost"][1]
+    )
+
+    # Evite de consommer plus d'énergie que disponible.
+    cost = min(cost, energy)
 
     change_energy(
         chat.id,
         user.id,
-        -energy_cost
+        -cost
     )
 
-    photo = await get_profile_photo(
-        context.bot,
-        user.id
-    )
-
+    # Détermination de la cible.
     if user.id == p1:
-        hp2 = max(0, hp2 - damage)
-        next_turn = 2
+
+        hp2 = max(
+            0,
+            hp2 - damage
+        )
+
+        next_turn = p2
+
+        target_hp = hp2
+
     else:
-        hp1 = max(0, hp1 - damage)
-        next_turn = 1
+
+        hp1 = max(
+            0,
+            hp1 - damage
+        )
+
+        next_turn = p1
+
+        target_hp = hp1
 
     update_battle(
         chat.id,
@@ -615,42 +750,43 @@ async def attaque(update: Update, context: ContextTypes.DEFAULT_TYPE):
         next_turn
     )
 
-    text = (
-        f"💥 ATTAQUE DE {user.full_name.upper()} !\n\n"
-        f"{domain['emoji']} {domain['name']}\n\n"
-        "📜 INCANTATIO\n\n"
-        f"{domain['speech']}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"💥 PUISSANCE : -{damage}\n"
-        f"🔋 COÛT : -{energy_cost} énergie\n\n"
-        "⚔️ ÉTAT DU TERRITOIRE\n\n"
-        f"🔴 Joueur 1\n"
-        f"{bar(hp1)} {hp1}%\n\n"
-        f"🔵 Joueur 2\n"
-        f"{bar(hp2)} {hp2}%"
+    # Nouvelle énergie.
+    new_data = get_player(
+        chat.id,
+        user.id
     )
 
-    if photo:
+    new_energy = new_data[0]
 
-        await context.bot.send_photo(
-            chat_id=chat.id,
-            photo=InputFile(photo),
-            caption=text
-        )
+    text = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💥 ATTAQUE DE {user.full_name.upper()}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📸 {domain['emoji']} {domain['character']}\n"
+        f"⚔️ {domain['name']}\n\n"
+        "📜 INCANTATION\n\n"
+        f"{domain['speech']}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💥 PUISSANCE : -{damage}\n"
+        f"🔋 ÉNERGIE : -{cost}\n\n"
+        f"⚡ Énergie restante : {new_energy}/100\n\n"
+        "⚔️ CONFRONTATION\n\n"
+        f"🔴 Joueur 1\n"
+        f"{health_bar(hp1)} {hp1}%\n\n"
+        f"🔵 Joueur 2\n"
+        f"{health_bar(hp2)} {hp2}%\n\n"
+        f"🎯 Territoire touché : {target_hp}%"
+    )
 
-        try:
-            os.remove(photo)
-        except:
-            pass
-
-    else:
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=text
-        )
+    await send_player_card(
+        update,
+        context,
+        user,
+        text
+    )
 
     # ========================================================
-    # FIN DU COMBAT
+    # VICTOIRE
     # ========================================================
 
     if hp1 <= 0 or hp2 <= 0:
@@ -658,44 +794,107 @@ async def attaque(update: Update, context: ContextTypes.DEFAULT_TYPE):
         winner = p1 if hp2 <= 0 else p2
         loser = p2 if winner == p1 else p1
 
-        add_win(chat.id, winner)
-        add_loss(chat.id, loser)
-
-        finish_battle(chat.id)
-
         winner_data = get_player(
             chat.id,
             winner
         )
 
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=(
-                "━━━━━━━━━━━━━━━━━━\n"
-                "🏆 TERRITOIRE DÉTRUIT\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
-                f"👑 VAINQUEUR : {winner_data and winner_data[0] and 'LE COMBATTANT'}\n\n"
-                "⚔️ Le territoire adverse s'est effondré.\n"
-                "🔥 La confrontation est terminée.\n\n"
-                "Utilisez /extension_du_territoire\n"
-                "pour commencer un nouveau combat."
-            )
+        winner_name = winner_data[6]
+
+        end_battle(chat.id)
+
+        add_result(
+            chat.id,
+            winner,
+            win=True,
+            like=True,
+            xp=100
         )
 
+        add_result(
+            chat.id,
+            loser,
+            win=False,
+            like=False,
+            xp=25
+        )
+
+        winner_energy = get_player(
+            chat.id,
+            winner
+        )[0]
+
+        # Récupération photo du gagnant.
+        photo = await get_profile_photo(
+            context.bot,
+            winner
+        )
+
+        victory_text = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🏆 TERRITOIRE VAINQUEUR\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👑 {winner_name}\n\n"
+            "⚔️ SON TERRITOIRE DOMINE !\n\n"
+            "💥 Le territoire adverse s'est effondré.\n\n"
+            "❤️ LIKE DU BOT : +1\n"
+            "⭐ XP : +100\n"
+            "🏆 VICTOIRE : +1\n\n"
+            f"🔋 Énergie restante : {winner_energy}/100\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🎉 FIN DE LA CONFRONTATION\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+
+        if photo:
+
+            try:
+
+                await context.bot.send_photo(
+                    chat_id=chat.id,
+                    photo=InputFile(str(photo)),
+                    caption=victory_text
+                )
+
+                photo.unlink()
+
+            except Exception:
+
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=victory_text
+                )
+
+        else:
+
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=victory_text
+            )
+
 
 # ============================================================
-# ÉNERGIE
+# ENERGIE
 # ============================================================
 
-async def energie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def energie(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+    if chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP
+    ):
         return
 
-    register_player(chat.id, user)
+    register_player(
+        chat.id,
+        user
+    )
 
     data = get_player(
         chat.id,
@@ -705,9 +904,12 @@ async def energie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     energy = data[0]
 
     await update.message.reply_text(
-        f"🔋 ÉNERGIE DE TERRITOIRE\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔋 ÉNERGIE DU TERRITOIRE\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👤 {user.full_name}\n\n"
-        f"{bar(energy)} {energy}/100"
+        f"{energy_bar(energy)}\n\n"
+        f"⚡ {energy}/100"
     )
 
 
@@ -715,53 +917,138 @@ async def energie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # STATS
 # ============================================================
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+    if chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP
+    ):
         return
 
-    register_player(chat.id, user)
+    register_player(
+        chat.id,
+        user
+    )
 
     data = get_player(
         chat.id,
         user.id
     )
 
-    energy, wins, losses = data
+    energy, wins, losses, likes, xp, last, name = data
+
+    level = 1 + (xp // 500)
 
     await update.message.reply_text(
-        "📊 TES STATISTIQUES\n\n"
-        f"👤 {user.full_name}\n"
-        f"🔋 Énergie : {energy}/100\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 PROFIL DU TERRITOIRE\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 {name}\n"
+        f"⭐ Niveau : {level}\n"
+        f"✨ XP : {xp}\n"
+        f"⚡ Énergie : {energy}/100\n"
         f"🏆 Victoires : {wins}\n"
         f"💀 Défaites : {losses}\n"
+        f"❤️ Likes : {likes}\n"
         f"⚔️ Combats : {wins + losses}"
     )
+
+
+# ============================================================
+# CLASSEMENT
+# ============================================================
+
+async def classement(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    chat = update.effective_chat
+
+    if chat.type not in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP
+    ):
+        return
+
+    con = connect_db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT name, wins, likes, xp
+        FROM players
+        WHERE chat_id=?
+        ORDER BY wins DESC, xp DESC
+        LIMIT 10
+    """, (chat.id,))
+
+    rows = cur.fetchall()
+
+    con.close()
+
+    if not rows:
+
+        await update.message.reply_text(
+            "📊 Aucun joueur enregistré."
+        )
+        return
+
+    text = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🏆 CLASSEMENT DU TERRITOIRE\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    medals = [
+        "🥇",
+        "🥈",
+        "🥉",
+    ]
+
+    for i, row in enumerate(rows):
+
+        medal = medals[i] if i < 3 else f"{i+1}."
+
+        name, wins, likes, xp = row
+
+        text += (
+            f"{medal} {name}\n"
+            f"   🏆 {wins} | ❤️ {likes} | ⭐ {xp} XP\n\n"
+        )
+
+    await update.message.reply_text(text)
 
 
 # ============================================================
 # ABANDON
 # ============================================================
 
-async def abandonner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def abandonner(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     chat = update.effective_chat
     user = update.effective_user
 
     battle = get_battle(chat.id)
 
-    if not battle or battle[4] != 1:
+    if not battle or battle[5] != 1:
+
         await update.message.reply_text(
             "❌ Aucun combat actif."
         )
         return
 
-    p1, p2, hp1, hp2, active, turn = battle
+    p1, p2, hp1, hp2, turn, active = battle
 
-    if user.id not in [p1, p2]:
+    if user.id not in (p1, p2):
 
         await update.message.reply_text(
             "👥 Tu es spectateur."
@@ -770,16 +1057,30 @@ async def abandonner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     opponent = p2 if user.id == p1 else p1
 
-    finish_battle(chat.id)
+    end_battle(chat.id)
 
-    add_loss(chat.id, user.id)
+    add_result(
+        chat.id,
+        user.id,
+        win=False,
+        xp=0
+    )
 
     if opponent != 0:
-        add_win(chat.id, opponent)
+
+        add_result(
+            chat.id,
+            opponent,
+            win=True,
+            like=True,
+            xp=100
+        )
 
     await update.message.reply_text(
-        f"🏳️ {user.full_name} abandonne le territoire.\n\n"
-        "🏆 L'adversaire remporte la confrontation."
+        "🏳️ ABANDON DU TERRITOIRE\n\n"
+        f"👤 {user.full_name} quitte le combat.\n\n"
+        "🏆 Le territoire adverse remporte la confrontation.\n"
+        "❤️ Like du bot : +1 au vainqueur."
     )
 
 
@@ -790,72 +1091,80 @@ async def abandonner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
 
     if not TOKEN:
+
         raise RuntimeError(
-            "BOT_TOKEN n'est pas configuré."
+            "La variable BOT_TOKEN n'est pas configurée."
         )
 
     init_db()
 
-    app = (
+    application = (
         Application
         .builder()
         .token(TOKEN)
         .build()
     )
 
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+    application.add_handler(
+        CommandHandler("start", start)
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "extension_du_territoire",
             extension
         )
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "contre_extension",
             contre_extension
         )
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "attaque",
             attaque
         )
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "energie",
             energie
         )
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "stats",
             stats
         )
     )
 
-    app.add_handler(
+    application.add_handler(
+        CommandHandler(
+            "classement",
+            classement
+        )
+    )
+
+    application.add_handler(
         CommandHandler(
             "abandonner",
             abandonner
         )
     )
 
-    print("⚔️ BATTLE OF DOMAINS démarré !")
+    print("⚔️ BATTLE OF DOMAINS — BOT ONLINE")
 
-    app.run_polling()
+    application.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
     main()
+```
