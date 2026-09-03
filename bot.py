@@ -1,172 +1,861 @@
+import asyncio
+import os
 import random
-import logging
-from anthropic import Anthropic
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import sqlite3
+import time
+from pathlib import Path
 
-# Configuration des jetons et de la sécurité
-TOKEN = "8378559671:AAH6QRBPqenK3BVZNTZzS1ljO5DSD4uOyjg"
-ANTHROPIC_API_KEY = "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"
-ADMIN_ID = 8045306923  # ⚠️ REMPLACE PAR TON PROPRE ID TELEGRAM
-
-# Initialisation du client Anthropic
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
-
-# Configuration du rôle pour donner la personnalité de Muzan à Claude
-MUZAN_PROMPT_SYSTEME = (
-    "Tu es Muzan Kibutsuji, le maître absolu des démons du manga Demon Slayer. "
-    "Tu as été réincarné en tant que formateur suprême en développement et informatique. "
-    "Tu t'adresses à des élèves humains qui sont tes subordonnés. "
-    "Ta personnalité : froid, impitoyable, hautain, exigeant la perfection absolue. "
-    "Tu méprises la faiblesse et l'incompétence humaine. "
-    "Tu dois répondre aux questions techniques (programmation, logique, algorithmes) avec une expertise parfaite, "
-    "tout en utilisant un ton menaçant, autoritaire et noble. Ne sors JAMAIS de ton personnage."
+from telegram import Update, InputFile
+from telegram.constants import ChatType
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
 )
 
-# Dictionnaire des Grades officiels
-GRADES = {
-    0: "Petit (Nouveau)",
-    1: "Ⅵ : Soldat de 2ème classe",
-    2: "Ⅶ : Soldat de 1ère classe",
-    3: "Ⅷ : Caporal",
-    4: "Ⅸ : Sergent",
-    5: "Ⅹ : Sergent-Chef",
-    6: "Ⅽ : Adjudant",
-    7: "✚ : Adjudant-Chef",
-    8: "Ⅾ : Sous-Lieutenant",
-    9: "✜ : Lieutenant",
-    10: "✫ : Capitaine",
-    11: "Ⅿ : Commandant",
-    12: "✯ : Lieutenant-Colonel",
-    13: "✪ : Colonel",
-    14: "ↀ : Général de Brigade",
-    15: "✞ : Général de Division",
-    16: "✠ : Maréchal / Général d'Armée"
-}
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-users_db = {}
-active_questions = {}
+TOKEN = os.getenv("8675798865:AAG2JDi5_zdEeceZobsGIHy9BC4iKw25YqQ")
 
-# Questions de logique et programmation fixes pour la commande /epreuve
-QUESTIONS = [
+DB_FILE = "domains.db"
+COOLDOWN = 5
+
+# ============================================================
+# DOMAINES
+# ============================================================
+
+DOMAINS = [
     {
-        "q": "Analyse ce code Python :\n`resultat = [x * 2 for x in range(5) if x % 2 == 0]`\n\nQuelle est la valeur exacte contenue dans la variable `resultat` ? Donne uniquement la liste finale.",
-        "script": "resultat = [x * 2 for x in range(5) if x % 2 == 0]\nprint(resultat)",
-        "reponse": "[0, 4, 8]",
-        "explication": "range(5) génère [0, 1, 2, 3, 4]. Les nombres pairs sont 0, 2 et 4. Multipliés par 2, cela donne 0, 4 et 8. Une logique mathématique basique que même un humain devrait maîtriser."
-    }
+        "name": "Sanctuaire Démoniaque",
+        "character": "Sukuna",
+        "emoji": "🔥",
+        "power": 22,
+        "energy": 20,
+        "speech": (
+            "Audite vocem meam, o caeli et terra. "
+            "Termini mundi nunc franguntur. "
+            "Nulla lex, nulla fuga, nulla spes remanet. "
+            "Imperium meum super omnia surgit. "
+            "Aperiantur portae territorii, "
+            "et silentium cadat super eos qui resistunt."
+        ),
+    },
+    {
+        "name": "Sphère de l'Infini",
+        "character": "Gojo",
+        "emoji": "♾️",
+        "power": 24,
+        "energy": 24,
+        "speech": (
+            "Inter finitum et infinitum, "
+            "spatium sine fine nascitur. "
+            "Quod appropinquat, lente subsistit. "
+            "Quod fugit, semper manet. "
+            "Mens hominis ante infinitatem tremit. "
+            "Nunc territorium meum aperitur."
+        ),
+    },
+    {
+        "name": "Perfection de Soi",
+        "character": "Mahito",
+        "emoji": "👁️",
+        "power": 19,
+        "energy": 18,
+        "speech": (
+            "Forma mutatur, anima movetur, "
+            "et corpus veritatem suam revelat. "
+            "Nihil stabile est sub hoc caelo. "
+            "Omnis forma potest frangi et renasci. "
+            "Territorium meum nunc aperiatur."
+        ),
+    },
+    {
+        "name": "Cercueil de la Montagne de Fer",
+        "character": "Jogo",
+        "emoji": "🌋",
+        "power": 21,
+        "energy": 21,
+        "speech": (
+            "Ignis antiquus e profundo terrae surgat. "
+            "Montes ardeant et caelum rubescat. "
+            "Calor meus omnia claustra superet. "
+            "Sub potestate ignis, "
+            "nullum refugium permaneat."
+        ),
+    },
+    {
+        "name": "Horizon du Captif",
+        "character": "Dagon",
+        "emoji": "🌊",
+        "power": 20,
+        "energy": 20,
+        "speech": (
+            "Oceanus infinitus vocat. "
+            "Undae surgant ultra caelum. "
+            "Profundum aperitur, "
+            "et terra hominum evanescit. "
+            "In hoc regno maris, "
+            "ego dominor."
+        ),
+    },
 ]
 
-def muzan_parle():
-    replies = [
-        "Ne lève pas les yeux vers moi. Contente-toi d'exécuter mes ordres.",
-        "Le monde regorge d'humains pathétiques. Seule la perfection technique m'intéresse.",
-        "Échouer face à mes questions équivaut à signer ton arrêt de mort."
-    ]
-    return random.choice(replies)
+# ============================================================
+# BASE DE DONNÉES
+# ============================================================
+
+def db():
+    return sqlite3.connect(DB_FILE)
+
+
+def init_db():
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            chat_id INTEGER,
+            user_id INTEGER,
+            name TEXT,
+            energy INTEGER DEFAULT 100,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            PRIMARY KEY(chat_id, user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS battles (
+            chat_id INTEGER PRIMARY KEY,
+            player1 INTEGER,
+            player2 INTEGER,
+            hp1 INTEGER DEFAULT 100,
+            hp2 INTEGER DEFAULT 100,
+            active INTEGER DEFAULT 1,
+            turn INTEGER DEFAULT 1
+        )
+    """)
+
+    con.commit()
+    con.close()
+
+
+def register_player(chat_id, user):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        INSERT OR IGNORE INTO players
+        (chat_id, user_id, name, energy)
+        VALUES (?, ?, ?, 100)
+    """, (
+        chat_id,
+        user.id,
+        user.full_name,
+    ))
+
+    con.commit()
+    con.close()
+
+
+def get_player(chat_id, user_id):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT energy, wins, losses
+        FROM players
+        WHERE chat_id=? AND user_id=?
+    """, (chat_id, user_id))
+
+    result = cur.fetchone()
+    con.close()
+
+    return result
+
+
+def change_energy(chat_id, user_id, amount):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE players
+        SET energy = MAX(0, MIN(100, energy + ?))
+        WHERE chat_id=? AND user_id=?
+    """, (amount, chat_id, user_id))
+
+    con.commit()
+    con.close()
+
+
+# ============================================================
+# PHOTO DE PROFIL
+# ============================================================
+
+async def get_profile_photo(bot, user_id):
+    """
+    Essaie de récupérer la photo de profil Telegram du joueur.
+    Retourne le fichier Telegram ou None.
+    """
+
+    try:
+        photos = await bot.get_user_profile_photos(
+            user_id=user_id,
+            limit=1
+        )
+
+        if photos.total_count == 0:
+            return None
+
+        photo = photos.photos[0][-1]
+
+        file = await bot.get_file(photo.file_id)
+
+        path = f"profile_{user_id}.jpg"
+
+        await file.download_to_drive(path)
+
+        return path
+
+    except Exception as e:
+        print("Erreur photo profil:", e)
+        return None
+
+
+# ============================================================
+# OUTILS
+# ============================================================
+
+def bar(value):
+    value = max(0, min(100, value))
+
+    full = value // 10
+    empty = 10 - full
+
+    return "█" * full + "░" * empty
+
+
+def random_domain():
+    return random.choice(DOMAINS)
+
+
+def get_battle(chat_id):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT player1, player2, hp1, hp2, active, turn
+        FROM battles
+        WHERE chat_id=?
+    """, (chat_id,))
+
+    result = cur.fetchone()
+    con.close()
+
+    return result
+
+
+def create_battle(chat_id, p1, p2):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        INSERT OR REPLACE INTO battles
+        (chat_id, player1, player2, hp1, hp2, active, turn)
+        VALUES (?, ?, ?, 100, 100, 1, 1)
+    """, (chat_id, p1, p2))
+
+    con.commit()
+    con.close()
+
+
+def update_battle(chat_id, hp1, hp2, turn):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE battles
+        SET hp1=?, hp2=?, turn=?
+        WHERE chat_id=?
+    """, (hp1, hp2, turn, chat_id))
+
+    con.commit()
+    con.close()
+
+
+def finish_battle(chat_id):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE battles
+        SET active=0
+        WHERE chat_id=?
+    """, (chat_id,))
+
+    con.commit()
+    con.close()
+
+
+def add_win(chat_id, user_id):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE players
+        SET wins=wins+1
+        WHERE chat_id=? AND user_id=?
+    """, (chat_id, user_id))
+
+    con.commit()
+    con.close()
+
+
+def add_loss(chat_id, user_id):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        UPDATE players
+        SET losses=losses+1
+        WHERE chat_id=? AND user_id=?
+    """, (chat_id, user_id))
+
+    con.commit()
+    con.close()
+
+
+# ============================================================
+# COMMANDE /START
+# ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        "⚔️ BATTLE OF DOMAINS ⚔️\n\n"
+        "Bienvenue dans le système de confrontation.\n\n"
+        "Commandes :\n"
+        "/extension_du_territoire — lancer un domaine\n"
+        "/contre_extension — répondre à un domaine\n"
+        "/attaque — attaquer\n"
+        "/energie — voir son énergie\n"
+        "/stats — voir ses statistiques\n"
+        "/abandonner — quitter le combat\n\n"
+        "⚡ Énergie maximale : 100"
+    )
+
+
+# ============================================================
+# EXTENSION DU TERRITOIRE
+# ============================================================
+
+async def extension(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    message = update.effective_message
+    chat = update.effective_chat
     user = update.effective_user
-    user_id = user.id
-    if user_id not in users_db:
-        users_db[user_id] = {"name": user.first_name, "xp": 0, "grade_level": 0, "resolved": 0}
-    grade_actuel = GRADES[users_db[user_id]["grade_level"]]
-    msg = (
-        f"🩸 *Prosternez-vous devant Muzan Kibutsuji.*\n\n"
-        f"Humain nommé {user.first_name}... Ton grade actuel : `{grade_actuel}`.\n\n"
-        f"Exécute mes directives, pose tes questions sur le code, et j'évaluerai ton utilité."
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def profil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in users_db: return
-    data = users_db[user_id]
-    grade_text = GRADES[data["grade_level"]]
-    classement = sorted(users_db.items(), key=lambda x: (x[1]["xp"], x[1]["resolved"]), reverse=True)
-    rang = next((i + 1 for i, (uid, _) in enumerate(classement) if uid == user_id), 1)
-
-    msg = (
-        f"📊 *REGISTRE DES SUBORDONNÉS — MUZAN*\n\n"
-        f"👤 *Nom :* {data['name']}\n"
-        f"🎖️ *Grade :* `{grade_text}`\n"
-        f"🎯 *Points d'XP :* {data['xp']} XP\n"
-        f"🏆 *Rang dans la hiérarchie :* {rang}/{len(users_db)}"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def epreuve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    exo = random.choice(QUESTIONS)
-    active_questions[chat_id] = exo
-    msg = (
-        f"{muzan_parle()}\n\n"
-        f"{exo['q']}\n\n"
-        f"📦 *EXEMPLE DE SCRIPT LIÉ :*\n```python\n{exo['script']}\n```"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def promouvoir(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender_id = update.effective_user.id
-    if sender_id != ADMIN_ID:
-        await update.message.reply_text("🩸 *Tu oses usurper mon autorité ?* Seul mon maître peut accorder des promotions.")
+    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        await message.reply_text(
+            "⚠️ Les territoires ne peuvent être ouverts que dans un groupe."
+        )
         return
 
-    if not context.args: return
-    try:
-        target_id = int(context.args[0])
-    except ValueError: return
+    register_player(chat.id, user)
 
-    if target_id not in users_db: return
-    current_level = users_db[target_id]["grade_level"]
-    if current_level >= max(GRADES.keys()): return
+    battle = get_battle(chat.id)
 
-    new_level = current_level + 1
-    users_db[target_id]["grade_level"] = new_level
-    await update.message.reply_text(f"🩸 L'élève *{users_db[target_id]['name']}* passe au rang de : `{GRADES[new_level]}`.")
-
-async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    user_id = user.id
-    user_text = update.message.text.strip()
-
-    if user_id not in users_db:
-        users_db[user_id] = {"name": user.first_name, "xp": 0, "grade_level": 0, "resolved": 0}
-
-    if chat_id in active_questions:
-        exo = active_questions[chat_id]
-        if user_text.lower() == exo["reponse"].lower():
-            del active_questions[chat_id]
-            users_db[user_id]["xp"] += 25
-            await update.message.reply_text(f"🩸 *Exact, {user.first_name}.* +25 XP.\n\n📖 *EXPLICATION :*\n{exo['explication']}", parse_mode="Markdown")
-            return
-
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-    
-    try:
-        # Appel à l'API Anthropic (Modèle Claude 3.5 Sonnet)
-        message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1000,
-            system=MUZAN_PROMPT_SYSTEME,
-            messages=[{"role": "user", "content": user_text}]
+    if battle and battle[4] == 1:
+        await message.reply_text(
+            "⚔️ Un territoire est déjà actif !\n"
+            "Utilise /contre_extension pour répondre."
         )
-        await update.message.reply_text(message.content[0].text, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Erreur Anthropic : {e}")
-        await update.message.reply_text("🩸 Mes pensées sont perturbées... Recommence plus tard.")
+        return
+
+    domain = random_domain()
+
+    # On crée un combat avec un adversaire temporaire.
+    # Le premier joueur devient le challenger.
+    create_battle(
+        chat.id,
+        user.id,
+        0
+    )
+
+    # Photo du joueur
+    photo = await get_profile_photo(
+        context.bot,
+        user.id
+    )
+
+    text = (
+        "⚠️ UNE PRÉSENCE ÉTRANGE SE MANIFESTE...\n\n"
+        f"👤 {user.full_name}\n\n"
+        f"{domain['emoji']} {domain['character']}\n\n"
+        f"「領域展開」\n\n"
+        f"⚔️ {domain['name']}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📜 INCANTATION\n\n"
+        f"{domain['speech']}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "⚡ TERRITOIRE OUVERT"
+    )
+
+    if photo:
+        sent = await context.bot.send_photo(
+            chat_id=chat.id,
+            photo=InputFile(photo),
+            caption=text
+        )
+
+        try:
+            os.remove(photo)
+        except:
+            pass
+
+    else:
+        sent = await context.bot.send_message(
+            chat_id=chat.id,
+            text=text
+        )
+
+    # On rappelle aux spectateurs de ne pas interférer.
+    await context.bot.send_message(
+        chat_id=chat.id,
+        text=(
+            "👥 SPECTATEURS\n\n"
+            "Le territoire est ouvert.\n"
+            "Seul un autre joueur peut répondre avec :\n\n"
+            "/contre_extension"
+        )
+    )
+
+
+# ============================================================
+# CONTRE-EXTENSION
+# ============================================================
+
+async def contre_extension(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        return
+
+    register_player(chat.id, user)
+
+    battle = get_battle(chat.id)
+
+    if not battle or battle[4] != 1:
+        await message.reply_text(
+            "❌ Aucun territoire actif."
+        )
+        return
+
+    player1, player2, hp1, hp2, active, turn = battle
+
+    if player1 == user.id:
+        await message.reply_text(
+            "⚠️ Tu ne peux pas contre-attaquer ton propre territoire."
+        )
+        return
+
+    if player2 != 0:
+        await message.reply_text(
+            "⚔️ Un adversaire a déjà rejoint le combat."
+        )
+        return
+
+    # Adversaire accepté
+    create_battle(
+        chat.id,
+        player1,
+        user.id
+    )
+
+    domain = random_domain()
+
+    photo = await get_profile_photo(
+        context.bot,
+        user.id
+    )
+
+    text = (
+        "⚡ CONTRE-EXTENSION !\n\n"
+        f"👤 {user.full_name}\n\n"
+        f"{domain['emoji']} {domain['character']}\n\n"
+        "「領域展開」\n\n"
+        f"⚔️ {domain['name']}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📜 INCANTATION\n\n"
+        f"{domain['speech']}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🔥 DEUX TERRITOIRES S'AFFRONTENT !"
+    )
+
+    if photo:
+
+        await context.bot.send_photo(
+            chat_id=chat.id,
+            photo=InputFile(photo),
+            caption=text
+        )
+
+        try:
+            os.remove(photo)
+        except:
+            pass
+
+    else:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=text
+        )
+
+    await context.bot.send_message(
+        chat_id=chat.id,
+        text=(
+            "⚔️ COMBAT COMMENCÉ !\n\n"
+            "Les deux combattants peuvent maintenant utiliser :\n"
+            "/attaque\n\n"
+            "👥 Les autres membres sont spectateurs."
+        )
+    )
+
+
+# ============================================================
+# ATTAQUE
+# ============================================================
+
+async def attaque(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        return
+
+    battle = get_battle(chat.id)
+
+    if not battle or battle[4] != 1:
+        await message.reply_text(
+            "❌ Aucun combat actif."
+        )
+        return
+
+    p1, p2, hp1, hp2, active, turn = battle
+
+    if user.id not in [p1, p2]:
+        await message.reply_text(
+            "👥 Tu es spectateur.\n"
+            "Seuls les deux combattants peuvent attaquer."
+        )
+        return
+
+    # Alternance des tours
+    current_player = p1 if turn == 1 else p2
+
+    if user.id != current_player:
+        await message.reply_text(
+            "⏳ Ce n'est pas ton tour."
+        )
+        return
+
+    player = get_player(chat.id, user.id)
+
+    if not player:
+        return
+
+    energy = player[0]
+
+    if energy < 10:
+        await message.reply_text(
+            "🔋 Énergie insuffisante !\n\n"
+            f"Énergie : {energy}/100"
+        )
+        return
+
+    domain = random_domain()
+
+    # puissance aléatoire
+    damage = random.randint(
+        max(8, domain["power"] - 7),
+        domain["power"] + 5
+    )
+
+    energy_cost = random.randint(8, 15)
+
+    change_energy(
+        chat.id,
+        user.id,
+        -energy_cost
+    )
+
+    photo = await get_profile_photo(
+        context.bot,
+        user.id
+    )
+
+    if user.id == p1:
+        hp2 = max(0, hp2 - damage)
+        next_turn = 2
+    else:
+        hp1 = max(0, hp1 - damage)
+        next_turn = 1
+
+    update_battle(
+        chat.id,
+        hp1,
+        hp2,
+        next_turn
+    )
+
+    text = (
+        f"💥 ATTAQUE DE {user.full_name.upper()} !\n\n"
+        f"{domain['emoji']} {domain['name']}\n\n"
+        "📜 INCANTATIO\n\n"
+        f"{domain['speech']}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💥 PUISSANCE : -{damage}\n"
+        f"🔋 COÛT : -{energy_cost} énergie\n\n"
+        "⚔️ ÉTAT DU TERRITOIRE\n\n"
+        f"🔴 Joueur 1\n"
+        f"{bar(hp1)} {hp1}%\n\n"
+        f"🔵 Joueur 2\n"
+        f"{bar(hp2)} {hp2}%"
+    )
+
+    if photo:
+
+        await context.bot.send_photo(
+            chat_id=chat.id,
+            photo=InputFile(photo),
+            caption=text
+        )
+
+        try:
+            os.remove(photo)
+        except:
+            pass
+
+    else:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=text
+        )
+
+    # ========================================================
+    # FIN DU COMBAT
+    # ========================================================
+
+    if hp1 <= 0 or hp2 <= 0:
+
+        winner = p1 if hp2 <= 0 else p2
+        loser = p2 if winner == p1 else p1
+
+        add_win(chat.id, winner)
+        add_loss(chat.id, loser)
+
+        finish_battle(chat.id)
+
+        winner_data = get_player(
+            chat.id,
+            winner
+        )
+
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=(
+                "━━━━━━━━━━━━━━━━━━\n"
+                "🏆 TERRITOIRE DÉTRUIT\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+                f"👑 VAINQUEUR : {winner_data and winner_data[0] and 'LE COMBATTANT'}\n\n"
+                "⚔️ Le territoire adverse s'est effondré.\n"
+                "🔥 La confrontation est terminée.\n\n"
+                "Utilisez /extension_du_territoire\n"
+                "pour commencer un nouveau combat."
+            )
+        )
+
+
+# ============================================================
+# ÉNERGIE
+# ============================================================
+
+async def energie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        return
+
+    register_player(chat.id, user)
+
+    data = get_player(
+        chat.id,
+        user.id
+    )
+
+    energy = data[0]
+
+    await update.message.reply_text(
+        f"🔋 ÉNERGIE DE TERRITOIRE\n\n"
+        f"👤 {user.full_name}\n\n"
+        f"{bar(energy)} {energy}/100"
+    )
+
+
+# ============================================================
+# STATS
+# ============================================================
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        return
+
+    register_player(chat.id, user)
+
+    data = get_player(
+        chat.id,
+        user.id
+    )
+
+    energy, wins, losses = data
+
+    await update.message.reply_text(
+        "📊 TES STATISTIQUES\n\n"
+        f"👤 {user.full_name}\n"
+        f"🔋 Énergie : {energy}/100\n"
+        f"🏆 Victoires : {wins}\n"
+        f"💀 Défaites : {losses}\n"
+        f"⚔️ Combats : {wins + losses}"
+    )
+
+
+# ============================================================
+# ABANDON
+# ============================================================
+
+async def abandonner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    battle = get_battle(chat.id)
+
+    if not battle or battle[4] != 1:
+        await update.message.reply_text(
+            "❌ Aucun combat actif."
+        )
+        return
+
+    p1, p2, hp1, hp2, active, turn = battle
+
+    if user.id not in [p1, p2]:
+
+        await update.message.reply_text(
+            "👥 Tu es spectateur."
+        )
+        return
+
+    opponent = p2 if user.id == p1 else p1
+
+    finish_battle(chat.id)
+
+    add_loss(chat.id, user.id)
+
+    if opponent != 0:
+        add_win(chat.id, opponent)
+
+    await update.message.reply_text(
+        f"🏳️ {user.full_name} abandonne le territoire.\n\n"
+        "🏆 L'adversaire remporte la confrontation."
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
-    app = Application.builder().token(TOKEN).connect_timeout(30.0).read_timeout(30.0).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("profil", profil))
-    app.add_handler(CommandHandler("epreuve", epreuve))
-    app.add_handler(CommandHandler("promouvoir", promouvoir))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat))
-    
-    print("🩸 Muzan en ligne avec l'API Anthropic...")
+
+    if not TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN n'est pas configuré."
+        )
+
+    init_db()
+
+    app = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "extension_du_territoire",
+            extension
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "contre_extension",
+            contre_extension
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "attaque",
+            attaque
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "energie",
+            energie
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "stats",
+            stats
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "abandonner",
+            abandonner
+        )
+    )
+
+    print("⚔️ BATTLE OF DOMAINS démarré !")
+
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
