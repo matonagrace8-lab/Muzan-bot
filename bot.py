@@ -18,7 +18,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-TOKEN = os.getenv("8675798865:AAG2JDi5_zdEeceZobsGIHy9BC4iKw25YqQ")
+TOKEN = os.getenv("BOT_TOKEN")
 
 DB_FILE = "domains.db"
 MAX_ENERGY = 100
